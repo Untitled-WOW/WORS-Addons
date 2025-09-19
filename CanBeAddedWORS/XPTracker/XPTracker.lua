@@ -1,5 +1,9 @@
 XP_TrackerData = XP_TrackerData or {}  -- Ensure the saved variable table exists
 XP_TrackerData.transparency = XP_TrackerData.transparency or 1.0 
+-- Function to create the minimap button Using LibDBIcon and Ace3
+-- Moved to top to be used in other functions
+local XPTrackerFrameAddon = LibStub("AceAddon-3.0"):NewAddon("XPTrackerFrame")
+XPTrackerFrameMinimapButton = LibStub("LibDBIcon-1.0", true)
 -- Define experience table for levels 1 to 99
 local experienceTable = {
     [1] = 0,
@@ -293,7 +297,7 @@ local function formatNumberWithCommas(number)
 end
 
 -- Create the dropdown menu frame
-local menuFrame = CreateFrame("Frame", "SkillFrameMenu", UIParent, "UIDropDownMenuTemplate")
+local menuFrame = CreateFrame("Frame", "XPTracker_SkillFrameMenu", UIParent, "UIDropDownMenuTemplate")
 
 -- Table to store skill frames indexed by factionID for quick access
 local skillFrames = {}
@@ -314,7 +318,7 @@ local function SkillFrameMenu_Init(self, level)
         -- "Reset Skill" option
         info.text = "Reset Skill"
         info.func = function()
-            ResetSkillFrame(self.owner)
+            ResetSkillFrame_XPTrack(self.owner)
         end
         info.notCheckable = true
         UIDropDownMenu_AddButton(info, level)
@@ -443,6 +447,7 @@ local function CreateSkillFrame(skillName, factionID, parentFrame)
     frame.TotalXpGained = 0
     frame.StartTime = time()
     frame.LastTime = time()
+    frame.pauseTime = 0 -- Total time spent paused (not tracking)
     -- Store references to the elements inside the frame so we can update them later
     frame.skillIcon = skillIcon
     frame.xpGainedText = xpGainedText
@@ -457,6 +462,7 @@ local function CreateSkillFrame(skillName, factionID, parentFrame)
     frame.factionID = factionID  -- Store the factionID for this skill
     -- Attach an OnMouseUp script to handle right-clicks
     frame:EnableMouse(true)
+    frame.skillName = skillName -- Makes stuff easier for later
 
     frame:SetScript("OnMouseUp", function(self, button)
     if button == "RightButton" then
@@ -477,15 +483,17 @@ end
 -- Function to update an existing skill frame
 local function UpdateSkillFrame(skillFrame, skillData)
     local currentTime = time()
-    local timeElapsed = (currentTime - skillFrame.StartTime) / 3600  -- Time elapsed in hours
-    
+      -- Time elapsed in hours
+      -- Subtract paused time to not count time not tracking
+    local timeElapsed = (currentTime - (skillFrame.StartTime or 0) - skillFrame.pauseTime) / 3600
     -- Safeguard to prevent division by zero or very small numbers
     if timeElapsed <= 0 then
         timeElapsed = 0.0001  -- Use a very small number to avoid zero-division
     end
-	
+
     -- Update the total XP gained
-    skillFrame.TotalXpGained = skillFrame.TotalXpGained + skillData.xpGained
+    -- xpGained can be nil if loading from DB
+    skillFrame.TotalXpGained = skillFrame.TotalXpGained + (skillData.xpGained or 0)
 
     -- Calculate XP per hour based on time elapsed
     skillData.xpPerHour = math.ceil(skillFrame.TotalXpGained / timeElapsed)
@@ -496,7 +504,7 @@ local function UpdateSkillFrame(skillFrame, skillData)
     skillFrame.xpLeftText:SetText("XP Left: " .. formatNumberWithCommas(skillData.xpLeft))
     skillFrame.actionsText:SetText("Actions: " .. formatNumberWithCommas(skillData.actions))
     skillFrame.skillIcon:SetText(skillData.skillIcon)
-    
+
     -- Update the progress bar and percentage
     skillFrame.progressBar:SetMinMaxValues(0, 100)
     skillFrame.progressBar:SetValue(skillData.progressPercent)
@@ -513,7 +521,7 @@ end
 
 
 -- Parent frame to hold all the skill frames
-local parentFrame = CreateFrame("Frame", "SkillTrackerParentFrame", UIParent)
+local parentFrame = CreateFrame("Frame", "XPTracker_ParentFrame", UIParent)
 parentFrame:SetSize(265, 240)
 parentFrame:SetPoint("CENTER", 400, 225)
 parentFrame:SetBackdrop({
@@ -648,13 +656,22 @@ end)
 
 
 -- Function to reset and remove a skill frame
-function ResetSkillFrame(skillFrame)
+-- Renamed to avoid conflict with WORS_LITE
+function ResetSkillFrame_XPTrack(skillFrame)
     -- Remove the skill frame from the skillFrames table
+    print("Resetting skill frame for skill: " .. (skillFrame.skillName or "Unknown"))
+    local skillNameToDelete = skillFrame.skillName
     for factionID, frame in pairs(skillFrames) do
         if frame == skillFrame then
             skillFrames[factionID] = nil
             break
         end
+    end
+
+    -- Remove from AceDB (xpdb)
+    local db = XPTrackerFrameAddon.xpdb and XPTrackerFrameAddon.xpdb.profile
+    if db and db.skills and skillNameToDelete then
+        db.skills[skillNameToDelete] = nil
     end
 
     -- Remove the skill frame from the ordered list
@@ -675,15 +692,33 @@ function ResetSkillFrame(skillFrame)
 end
 
 
+-- Load SkillData into SkillFrame
+-- Might not need to merge all but just incase
+local function MergeSkillFrameData(skillFrame, skillData)
+    skillFrame.TotalXpGained = skillData.TotalXpGained or skillFrame.TotalXpGained
+    skillFrame.StartTime = skillData.StartTime or skillFrame.StartTime
+    skillFrame.LastTime = skillData.LastTime or skillFrame.LastTime
+    skillFrame.pauseTime = skillData.pauseTime or skillFrame.pauseTime
+    skillFrame.progressPercent = skillData.progressPercent or skillFrame.progressPercent
+    skillFrame.xpLeft = skillData.xpLeft or skillFrame.xpLeft
+    skillFrame.actions = skillData.actions or skillFrame.actions
+end
+
 -- Function to handle skill frame creation and updating dynamically
 local function HandleSkillFrameUpdate(skillName, skillData)
     -- Check if the skill frame already exists for the given skill
     local factionID = FactionData[skillName]
-
-    if not factionID then
+    
+        if not factionID then
         -- Skill not found in FactionData
         return
     end
+
+    -- Load skills db and initialize if necessary
+    local db = XPTrackerFrameAddon.xpdb and XPTrackerFrameAddon.xpdb.profile
+    db.skills = db.skills or {}
+    -- Load skill
+    local dbSkill = db.skills[skillName]
 
     -- Check if the frame for this factionID already exists
     if not skillFrames[factionID] then
@@ -694,12 +729,36 @@ local function HandleSkillFrameUpdate(skillName, skillData)
         -- Add the new skill frame to the ordered list
         table.insert(skillFramesList, skillFrame)
 
+        -- If a skill is saved
+        if dbSkill then
+            -- Anytime between last action and loading the DB we will assumed it was paused
+            local currentTime = time()
+            dbSkill.pauseTime = currentTime - dbSkill.LastTime + dbSkill.pauseTime
+            dbSkill.LastTime = currentTime
+            MergeSkillFrameData(skillFrame, dbSkill)
+        end
         -- Update the layout after adding a new frame
-        
-    end
 
+    end
+    
     -- Now that we know the frame exists, update it with new data
     UpdateSkillFrame(skillFrames[factionID], skillData)
+
+    -- Save both skillFrame and skillData to db
+    local skillFrame = skillFrames[factionID]
+    db.skills[skillName] = {
+        skillName = skillName,
+        xpLeft = tonumber((skillData and skillData.xpLeft) or skillFrame.xpLeft) or 0,
+        actions = tonumber((skillData and skillData.actions) or skillFrame.actions) or 0,
+        progressPercent = skillFrame.progressPercent,
+        currentLevel = skillData and skillData.currentLevel or nil,
+        skillIcon = skillData and skillData.skillIcon or nil,
+        StartTime = skillFrame.StartTime,
+        LastTime = skillFrame.LastTime,
+        pauseTime = skillFrame.pauseTime,
+        TotalXpGained = tonumber(skillFrame.TotalXpGained) or 0
+    }
+
     SortSkillFrames()
     UpdateSkillFramesLayout()
 end
@@ -746,15 +805,22 @@ XPTracker:SetScript("OnEvent", function(self, event, ...)
         -- Initialize tracking session on login
         loadXPBGTransparency()
 		--panel:Show() -- Show the tracker panel
-        
-        
+
+        -- Load saved skill frames from AceDB
+        local db = XPTrackerFrameAddon.xpdb and XPTrackerFrameAddon.xpdb.profile
+        if db and db.skills then
+            for skillName, skillData in pairs(db.skills) do
+                HandleSkillFrameUpdate(skillName, skillData)
+            end
+        end
+
     elseif event == "CHAT_MSG_COMBAT_FACTION_CHANGE" then
         local message = ...
         local iconPattern = "|T.-|t"
         -- Pattern to extract the amount
         local amountPattern = "(%d+)"
 
-       
+        
         local messageWithoutIcon = string.gsub(message, iconPattern, "")
 
         -- Extract the amount
@@ -829,9 +895,6 @@ function toggleXPBGTransparency()
 end
 
 
--- Function to create the minimap button Using LibDBIcon and Ace3
-local XPTrackerFrameAddon = LibStub("AceAddon-3.0"):NewAddon("XPTrackerFrame")
-XPTrackerFrameMinimapButton = LibStub("LibDBIcon-1.0", true)
 
 local miniButton = LibStub("LibDataBroker-1.1"):NewDataObject("XPTrackerFrame", {
 	type = "data source",
@@ -851,6 +914,15 @@ local miniButton = LibStub("LibDataBroker-1.1"):NewDataObject("XPTrackerFrame", 
                 parentFrame:Show()
 				toggleXPBGTransparency()
             end
+        elseif btn == "MiddleButton" then
+            -- Reset window to defaults
+            parentFrame:ClearAllPoints()
+            parentFrame:SetSize(265, 240)
+            parentFrame:SetPoint("CENTER", 400, 225)
+            -- Clear saved state in DB so it won't immediately restore old values
+            if XPTrackerFrameAddon and XPTrackerFrameAddon.db and XPTrackerFrameAddon.db.profile then
+                XPTrackerFrameAddon.db.profile.XPTracker_window = nil
+            end
         end
 	end,
 	OnTooltipShow = function(tooltip)
@@ -858,6 +930,7 @@ local miniButton = LibStub("LibDataBroker-1.1"):NewDataObject("XPTrackerFrame", 
 			return
 		end
 		tooltip:AddLine("XP Tracker\nLeft-click: Toggle XP Window", nil, nil, nil, nil)
+        tooltip:AddLine("Middle-click: Reset Window Position and size", nil, nil, nil, nil)
 		tooltip:AddLine("Right-click: Toggle Background Transparency", nil, nil, nil, nil)
 	end,
 
@@ -872,4 +945,102 @@ function XPTrackerFrameAddon:OnInitialize()
 		},
 	})
 	XPTrackerFrameMinimapButton:Register("XPTrackerFrame", miniButton, self.db.profile.minimap)
+    self.xpdb = LibStub('AceDB-3.0'):New('XPTrackerDB')
+end
+
+-- Restore window position/size from DB and attach save hooks
+do
+    local win = XPTrackerFrameAddon and XPTrackerFrameAddon.db and XPTrackerFrameAddon.db.profile and XPTrackerFrameAddon.db.profile.XPTracker_window
+    if win then
+        if win.width and win.height then
+            parentFrame:SetSize(win.width, win.height)
+        end
+        if win.point and win.x and win.y then
+            parentFrame:ClearAllPoints()
+            -- Restore relative to UIParent for now
+            parentFrame:SetPoint(win.point, UIParent, win.relativePoint or win.point, win.x, win.y)
+        end
+        -- clamp to screen after restore
+        local left = parentFrame:GetLeft() or 0
+        local right = parentFrame:GetRight() or 0
+        local top = parentFrame:GetTop() or 0
+        local bottom = parentFrame:GetBottom() or 0
+        local screenW = UIParent:GetWidth()
+        local screenH = UIParent:GetHeight()
+        local dx = 0
+        local dy = 0
+        if left < 0 then dx = -left end
+        if right > screenW then dx = screenW - right end
+        if bottom < 0 then dy = -bottom end
+        if top > screenH then dy = screenH - top end
+        if dx ~= 0 or dy ~= 0 then
+            parentFrame:ClearAllPoints()
+            parentFrame:SetPoint(win.point or "CENTER", UIParent, win.relativePoint or "CENTER", (win.x or 0) + dx, (win.y or 0) + dy)
+        end
+    end
+
+    -- Helper to save window state (anchor + offset + size)
+    local function SaveWindowState(self)
+        if not (XPTrackerFrameAddon and XPTrackerFrameAddon.db and XPTrackerFrameAddon.db.profile) then return end
+        XPTrackerFrameAddon.db.profile.XPTracker_window = XPTrackerFrameAddon.db.profile.XPTracker_window or {}
+        local point, relativeTo, relativePoint, xOfs, yOfs = self:GetPoint()
+        XPTrackerFrameAddon.db.profile.XPTracker_window.point = point
+        XPTrackerFrameAddon.db.profile.XPTracker_window.relativePoint = relativePoint
+        XPTrackerFrameAddon.db.profile.XPTracker_window.x = xOfs
+        XPTrackerFrameAddon.db.profile.XPTracker_window.y = yOfs
+        local w, h = self:GetSize()
+        XPTrackerFrameAddon.db.profile.XPTracker_window.width = w
+        XPTrackerFrameAddon.db.profile.XPTracker_window.height = h
+    end
+
+    -- Save position on drag stop
+    parentFrame:HookScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        SaveWindowState(self)
+    end)
+
+    -- Save size on resize change
+    parentFrame:HookScript("OnSizeChanged", function(self, width, height)
+        SaveWindowState(self)
+    end)
+end
+
+
+-- Function to reset all XP data (wipe DB and UI frames)
+-- Used for Debugging but can be useful for users too
+local function ResetAllXP()
+    -- Clear saved data in AceDB
+    if XPTrackerFrameAddon and XPTrackerFrameAddon.xpdb and XPTrackerFrameAddon.xpdb.profile then
+        local profile = XPTrackerFrameAddon.xpdb.profile
+        profile.skills = {}
+    end
+
+    -- Clear runtime skill frames
+    for factionID, frame in pairs(skillFrames) do
+        if frame then
+            frame:Hide()
+            frame:SetScript("OnUpdate", nil)
+            frame:SetParent(nil)
+        end
+        skillFrames[factionID] = nil
+    end
+    -- Clear ordered list
+    for i = #skillFramesList, 1, -1 do
+        table.remove(skillFramesList, i)
+    end
+
+    UpdateSkillFramesLayout()
+    print("XPTracker: All saved XP data wiped.")
+end
+
+-- Register slash command to wipe DB
+SLASH_XPTRACKER_RESET1 = "/resetallxp"
+_G.SlashCmdList = _G.SlashCmdList or {}
+_G.SlashCmdList["XPTRACKER_RESET"] = function(msg)
+    -- Confirm simple safety: require exact "confirm" argument to proceed
+    if msg and msg:lower():match("confirm") then
+        ResetAllXP()
+    else
+        print("Usage: /resetallxp confirm  -- This will wipe all saved XP data and UI frames.")
+    end
 end
