@@ -344,7 +344,7 @@ end
 
 
 local function CreateSkillFrame(skillName, factionID, parentFrame)
-    local frame = CreateFrame("Frame", skillName .. "Frame", parentFrame)
+    local frame = CreateFrame("Frame", skillName .. "FrameXPTrack", parentFrame)
     frame:SetSize(parentFrame:GetWidth() - 10, 65)
     -- Initial position; will be set correctly in UpdateSkillFramesLayout()
     frame:SetPoint("TOPLEFT", parentFrame, "TOPLEFT", 5, - (0))
@@ -578,7 +578,7 @@ end)
 
 
 -- Scroll frame to contain the skill frames
-local scrollFrame = CreateFrame("ScrollFrame", "SkillTrackerScrollFrame", parentFrame, "UIPanelScrollFrameTemplate")
+local scrollFrame = CreateFrame("ScrollFrame", "SkillTrackerScrollFrameXPTracker", parentFrame, "UIPanelScrollFrameTemplate")
 scrollFrame:SetPoint("TOPLEFT", parentFrame, "TOPLEFT", 0, -10)
 scrollFrame:SetSize(235, 220) -- Adjust the size to fit inside the parent frame
 
@@ -587,9 +587,9 @@ local scrollContent = CreateFrame("Frame", "SkillTrackerScrollContent", scrollFr
 scrollContent:SetSize(235, 220) -- Adjust size based on content
 scrollFrame:SetScrollChild(scrollContent)
 
-local scrollBar = _G["SkillTrackerScrollFrameScrollBar"] -- Default scrollbar name from "UIPanelScrollFrameTemplate"
-local scrollUpButton = _G["SkillTrackerScrollFrameScrollBarScrollUpButton"]
-local scrollDownButton = _G["SkillTrackerScrollFrameScrollBarScrollDownButton"]
+local scrollBar = _G["SkillTrackerScrollFrameXPTrackerScrollBar"] -- Default scrollbar name from "UIPanelScrollFrameTemplate"
+local scrollUpButton = _G["SkillTrackerScrollFrameXPTrackerScrollBarScrollUpButton"]
+local scrollDownButton = _G["SkillTrackerScrollFrameXPTrackerScrollBarScrollDownButton"]
 
 
 
