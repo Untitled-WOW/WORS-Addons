@@ -1,5 +1,51 @@
 XP_TrackerData = XP_TrackerData or {}  -- Ensure the saved variable table exists
 XP_TrackerData.transparency = XP_TrackerData.transparency or 1.0 
+-- Default update interval (seconds) for XP/hr refresh across all frames
+XP_TrackerData.updateInterval = XP_TrackerData.updateInterval or 1
+
+-- StaticPopup dialog to set the XP/hr update interval
+StaticPopupDialogs = StaticPopupDialogs or {}
+StaticPopupDialogs["XPTRACKER_SET_INTERVAL"] = {
+    text = "Set XP/hr update interval in seconds\n0.1 or higher for XP/hr updates\n0 to disable XP/hr updates",
+    button1 = "OK",
+    button2 = "Cancel",
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    hasEditBox = true,
+    maxLetters = 4,
+    OnShow = function(self)
+        self.editBox:SetText(tostring(XP_TrackerData.updateInterval or 1))
+        self.editBox:SetFocus()
+    end,
+    OnAccept = function(self)
+        local val = tonumber(self.editBox:GetText())
+        if val and val >= 0.0 then
+            XP_TrackerData.updateInterval = val
+            print("XPTracker: update interval set to " .. tostring(val) .. " seconds.")
+        else
+            print("XPTracker: invalid interval. Enter a number >= 0")
+        end
+    end,
+    EditBoxOnEnterPressed = function(self)
+        self:GetParent().button1:Click()
+    end,
+}
+
+-- Confirmation dialog for resetting all XP data
+StaticPopupDialogs["XPTRACKER_CONFIRM_RESET_ALL"] = {
+    text = "Are you sure you want to wipe ALL saved XP data? This cannot be undone.",
+    button1 = "Yes, wipe all",
+    button2 = "Cancel",
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    OnAccept = function(self)
+        if ResetAllXPInXpTracker then
+            ResetAllXPInXpTracker()
+        end
+    end,
+}
 -- Function to create the minimap button Using LibDBIcon and Ace3
 -- Moved to top to be used in other functions
 local XPTrackerFrameAddon = LibStub("AceAddon-3.0"):NewAddon("XPTrackerFrame")
@@ -316,18 +362,41 @@ local function SkillFrameMenu_Init(self, level)
 
     if level == 1 then
         -- "Reset Skill" option
-        info.text = "Reset Skill"
-        info.func = function()
+        local info1 = UIDropDownMenu_CreateInfo()
+        info1.text = "Reset Skill"
+        info1.func = function()
             ResetSkillFrame_XPTrack(self.owner)
         end
-        info.notCheckable = true
-        UIDropDownMenu_AddButton(info, level)
+        info1.notCheckable = true
+        UIDropDownMenu_AddButton(info1, level)
+
+        -- "Set XP/hr update seconds" option
+        local info2 = UIDropDownMenu_CreateInfo()
+        info2.text = "Set XP/hr update seconds"
+        info2.func = function()
+            -- Store a reference to which frame opened the dialog in case needed
+            _G.XPTracker_SetIntervalCaller = self.owner
+            -- Show the StaticPopup to get the new interval
+            StaticPopup_Show("XPTRACKER_SET_INTERVAL")
+        end
+        info2.notCheckable = true
+        UIDropDownMenu_AddButton(info2, level)
+
+        -- "Reset All XP" option
+        local infoReset = UIDropDownMenu_CreateInfo()
+        infoReset.text = "Reset All XP"
+        infoReset.func = function()
+            StaticPopup_Show("XPTRACKER_CONFIRM_RESET_ALL")
+        end
+        infoReset.notCheckable = true
+        UIDropDownMenu_AddButton(infoReset, level)
 
         -- "Cancel" option
-        info.text = "Cancel"
-        info.func = function() end
-        info.notCheckable = true
-        UIDropDownMenu_AddButton(info, level)
+        local info3 = UIDropDownMenu_CreateInfo()
+        info3.text = "Cancel"
+        info3.func = function() end
+        info3.notCheckable = true
+        UIDropDownMenu_AddButton(info3, level)
     end
 end
 
@@ -476,6 +545,30 @@ local function CreateSkillFrame(skillName, factionID, parentFrame)
     end
     end)
 	
+    -- OnUpdate handler to refresh XP/hr based on configured interval
+    local accum = 0
+    frame:SetScript("OnUpdate", function(self, elapsed)
+        accum = accum + elapsed
+        local interval = XP_TrackerData.updateInterval or 1
+        local disableXpTimer = interval <= 0
+        interval = 1
+        if accum < interval then return end
+        accum = 0
+        local currentTime = time()
+        local timeElapsed = (currentTime - (self.StartTime or 0) - self.pauseTime) / 3600
+        if timeElapsed <= 0 then timeElapsed = 0.0001 end -- I think this is impossible to hit.
+        local db = XPTrackerFrameAddon.xpdb and XPTrackerFrameAddon.xpdb.profile
+        self.LastTime = currentTime
+        if db and db.skills then
+            db.skills[self.skillName].LastTime = currentTime
+        end
+        if disableXpTimer then return end
+        local totalXp = self.TotalXpGained
+        local xpPerHour = math.ceil(totalXp / timeElapsed)
+        self.xpPerHour = xpPerHour
+        self.xpPerHourText:SetText("XP/hr: " .. formatNumberWithCommas(xpPerHour))
+    end)
+
     return frame
 end
 
@@ -1044,3 +1137,7 @@ _G.SlashCmdList["XPTRACKER_RESET"] = function(msg)
         print("Usage: /resetallxp confirm  -- This will wipe all saved XP data and UI frames.")
     end
 end
+
+-- Expose to global so earlier-defined popups can call it
+-- Allows other plugins to use
+_G.ResetAllXPInXpTracker = ResetAllXP
